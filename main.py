@@ -141,23 +141,91 @@ QListWidget {
     background-color: #0d1117;
     border: 1px solid #30363d;
     border-radius: 6px;
-    padding: 6px;
+    padding: 4px;
     color: #e6edf3;
+    outline: none;
 }
 
 QListWidget::item {
-    padding: 6px;
+    padding: 6px 8px;
     border-radius: 4px;
     margin-bottom: 2px;
+    color: #e6edf3;
+    min-height: 24px;
 }
 
 QListWidget::item:hover {
     background-color: #21262d;
+    color: #ffffff;
 }
 
 QListWidget::item:selected {
     background-color: #1f6feb;
     color: #ffffff;
+}
+
+/* Custom Scrollbars */
+QScrollBar:vertical {
+    background: #0d1117;
+    width: 10px;
+    border-radius: 5px;
+    margin: 0px;
+}
+
+QScrollBar::handle:vertical {
+    background: #30363d;
+    min-height: 20px;
+    border-radius: 5px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background: #58a6ff;
+}
+
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+    height: 0px;
+}
+
+QScrollBar:horizontal {
+    background: #0d1117;
+    height: 8px;
+    border-radius: 4px;
+    margin: 0px;
+}
+
+QScrollBar::handle:horizontal {
+    background: #30363d;
+    min-width: 20px;
+    border-radius: 4px;
+}
+
+QScrollBar::handle:horizontal:hover {
+    background: #58a6ff;
+}
+
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+    width: 0px;
+}
+
+QCheckBox {
+    color: #e6edf3;
+}
+
+QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1px solid #484f58;
+    background: #161b22;
+}
+
+QCheckBox::indicator:hover {
+    border-color: #58a6ff;
+}
+
+QCheckBox::indicator:checked {
+    background-color: #1f6feb;
+    border-color: #58a6ff;
 }
 
 /* Progress Bar */
@@ -293,10 +361,13 @@ class MainWindow(QMainWindow):
         p_card_layout.addWidget(p_hint)
 
         self.prospect_list_widget = QListWidget()
-        self.prospect_list_widget.setSelectionMode(QListWidget.SelectionMode.MultiSelection)
+        self.prospect_list_widget.setMinimumHeight(180)
+        self.prospect_list_widget.setWordWrap(True)
+        self.prospect_list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.prospect_list_widget.itemChanged.connect(self.on_prospect_item_changed)
         p_card_layout.addWidget(self.prospect_list_widget)
 
-        left_layout.addWidget(prospect_card, stretch=4)
+        left_layout.addWidget(prospect_card, stretch=5)
 
         # Group 2: Facebook Messenger Tab Selection
         messenger_card = QFrame()
@@ -534,20 +605,24 @@ class MainWindow(QMainWindow):
         for idx, tab in enumerate(self.available_tabs):
             title = tab.get("title", "Untitled")
             url = tab.get("url", "")
-            display_text = f"{title[:50]} ({url[:35]}...)" if len(url) > 35 else f"{title[:50]}"
+            display_text = f"{title[:65]}\n({url[:50]}...)" if len(url) > 50 else f"{title[:65]}"
 
-            # Add to prospect list
+            # Add to prospect list as a checkable item
             item = QListWidgetItem(f"📄 {display_text}")
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             item.setData(Qt.ItemDataRole.UserRole, tab)
-            self.prospect_list_widget.addItem(item)
-
+            
             # Auto-check if matches daily prospect patterns
             if "prospect" in title.lower() or "oct" in title.lower() or "nov" in title.lower() or "sheet" in title.lower():
-                item.setSelected(True)
+                item.setCheckState(Qt.CheckState.Checked)
+            else:
+                item.setCheckState(Qt.CheckState.Unchecked)
+
+            self.prospect_list_widget.addItem(item)
 
             # Add to dropdowns
-            self.messenger_combo.addItem(f"💬 {display_text}", tab)
-            self.master_combo.addItem(f"📊 {display_text}", tab)
+            self.messenger_combo.addItem(f"💬 {display_text.splitlines()[0]}", tab)
+            self.master_combo.addItem(f"📊 {display_text.splitlines()[0]}", tab)
 
             # Auto-select messenger
             if "messenger" in url.lower() or "facebook.com/messages" in url.lower() or "messenger" in title.lower():
@@ -563,21 +638,34 @@ class MainWindow(QMainWindow):
         if self.master_combo.count() > default_master_idx:
             self.master_combo.setCurrentIndex(default_master_idx)
 
+    def on_prospect_item_changed(self, item):
+        pass
+
     def select_all_prospects(self):
         for i in range(self.prospect_list_widget.count()):
-            self.prospect_list_widget.item(i).setSelected(True)
+            self.prospect_list_widget.item(i).setCheckState(Qt.CheckState.Checked)
 
     def clear_prospect_selection(self):
-        self.prospect_list_widget.clearSelection()
+        for i in range(self.prospect_list_widget.count()):
+            self.prospect_list_widget.item(i).setCheckState(Qt.CheckState.Unchecked)
+
+    def get_selected_prospect_tabs(self):
+        selected_tabs = []
+        for i in range(self.prospect_list_widget.count()):
+            item = self.prospect_list_widget.item(i)
+            # Check both checkState and isSelected for maximum user friendliness
+            if item.checkState() == Qt.CheckState.Checked or item.isSelected():
+                tab_data = item.data(Qt.ItemDataRole.UserRole)
+                if tab_data and tab_data not in selected_tabs:
+                    selected_tabs.append(tab_data)
+        return selected_tabs
 
     def start_tracker_task(self):
         # 1. Validate Selections
-        selected_prospect_items = self.prospect_list_widget.selectedItems()
-        if not selected_prospect_items:
-            QMessageBox.warning(self, "Selection Required", "Please select at least one Prospect Google Sheets tab.")
+        selected_prospect_tabs = self.get_selected_prospect_tabs()
+        if not selected_prospect_tabs:
+            QMessageBox.warning(self, "Selection Required", "Please check or select at least one Prospect Google Sheets tab.")
             return
-
-        selected_prospect_tabs = [item.data(Qt.ItemDataRole.UserRole) for item in selected_prospect_items]
 
         messenger_tab = self.messenger_combo.currentData()
         if not messenger_tab:
