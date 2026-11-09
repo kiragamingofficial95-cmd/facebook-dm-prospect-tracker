@@ -22,10 +22,10 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox, QListWidget, QListWidgetItem,
     QProgressBar, QTextEdit, QFrame, QSplitter, QCheckBox,
-    QGroupBox, QMessageBox, QGraphicsDropShadowEffect
+    QGroupBox, QMessageBox, QGraphicsDropShadowEffect, QLineEdit
 )
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QFont, QIcon, QColor, QTextCursor
+from PyQt6.QtCore import Qt, QTimer, QEvent
+from PyQt6.QtGui import QFont, QIcon, QColor, QTextCursor, QStandardItemModel, QStandardItem
 
 from cdp_engine import get_tabs
 from tracker_worker import TrackerWorker
@@ -276,6 +276,83 @@ QTextEdit {
 }
 """
 
+class CheckableComboBox(QComboBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().setStyleSheet("border: none; background: transparent; color: #e6edf3; font-weight: 500;")
+        self.model = QStandardItemModel(self)
+        self.setModel(self.model)
+        self.model.dataChanged.connect(self.update_summary_text)
+
+    def eventFilter(self, widget, event):
+        # Keep dropdown popup open when clicking checkboxes
+        if widget == self.view().viewport() and event.type() == QEvent.Type.MouseButtonRelease:
+            index = self.view().indexAt(event.pos())
+            if index.isValid():
+                item = self.model.itemFromIndex(index)
+                if item.checkState() == Qt.CheckState.Checked:
+                    item.setCheckState(Qt.CheckState.Unchecked)
+                else:
+                    item.setCheckState(Qt.CheckState.Checked)
+                return True
+        return super().eventFilter(widget, event)
+
+    def showPopup(self):
+        super().showPopup()
+        self.view().viewport().installEventFilter(self)
+
+    def hidePopup(self):
+        super().hidePopup()
+        self.update_summary_text()
+
+    def add_checkable_item(self, text, user_data=None, checked=False):
+        item = QStandardItem(text)
+        item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled)
+        item.setData(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
+        if user_data is not None:
+            item.setData(user_data, Qt.ItemDataRole.UserRole)
+        self.model.appendRow(item)
+        self.update_summary_text()
+
+    def update_summary_text(self):
+        checked_items = []
+        for i in range(self.model.rowCount()):
+            item = self.model.item(i)
+            if item and item.checkState() == Qt.CheckState.Checked:
+                checked_items.append(item.text().replace("📄 ", "").strip())
+        
+        if not checked_items:
+            self.lineEdit().setText("Select prospect sheet tabs...")
+        elif len(checked_items) == 1:
+            self.lineEdit().setText(f"1 Selected: {checked_items[0][:40]}")
+        else:
+            self.lineEdit().setText(f"{len(checked_items)} Sheets Selected: {', '.join([c[:20] for c in checked_items])}")
+
+    def get_checked_data(self):
+        result = []
+        for i in range(self.model.rowCount()):
+            item = self.model.item(i)
+            if item and item.checkState() == Qt.CheckState.Checked:
+                data = item.data(Qt.ItemDataRole.UserRole)
+                if data is not None:
+                    result.append(data)
+        return result
+
+    def set_all_checked(self, checked=True):
+        state = Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+        for i in range(self.model.rowCount()):
+            item = self.model.item(i)
+            if item:
+                item.setCheckState(state)
+        self.update_summary_text()
+
+    def clear_all(self):
+        self.model.clear()
+        self.lineEdit().setText("Select prospect sheet tabs...")
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -332,7 +409,7 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(0, 0, 10, 0)
         left_layout.setSpacing(12)
 
-        # Group 1: Prospect Lists / Sheets (Multiple Selection Allowed!)
+        # Group 1: Prospect Lists / Sheets Dropdown (Multi-select Checkable Dropdown)
         prospect_card = QFrame()
         prospect_card.setProperty("class", "CardFrame")
         p_card_layout = QVBoxLayout(prospect_card)
@@ -356,18 +433,15 @@ class MainWindow(QMainWindow):
 
         p_card_layout.addLayout(p_header_layout)
 
-        p_hint = QLabel("Select one or more Google Sheets tabs containing today's prospects:")
+        p_hint = QLabel("Choose one or multiple prospect Google Sheet tabs from dropdown:")
         p_hint.setStyleSheet("color: #8b949e; font-size: 11px;")
         p_card_layout.addWidget(p_hint)
 
-        self.prospect_list_widget = QListWidget()
-        self.prospect_list_widget.setMinimumHeight(180)
-        self.prospect_list_widget.setWordWrap(True)
-        self.prospect_list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.prospect_list_widget.itemChanged.connect(self.on_prospect_item_changed)
-        p_card_layout.addWidget(self.prospect_list_widget)
+        self.prospect_combo = CheckableComboBox()
+        self.prospect_combo.setMinimumHeight(38)
+        p_card_layout.addWidget(self.prospect_combo)
 
-        left_layout.addWidget(prospect_card, stretch=5)
+        left_layout.addWidget(prospect_card, stretch=2)
 
         # Group 2: Facebook Messenger Tab Selection
         messenger_card = QFrame()
@@ -586,7 +660,7 @@ class MainWindow(QMainWindow):
         tabs = get_tabs(9222)
         self.available_tabs = [t for t in tabs if t.get("type") == "page"]
 
-        self.prospect_list_widget.clear()
+        self.prospect_combo.clear_all()
         self.messenger_combo.clear()
         self.master_combo.clear()
 
@@ -598,31 +672,26 @@ class MainWindow(QMainWindow):
         self.log(f"Found {len(self.available_tabs)} active Chrome tab(s).", "success")
         self.progress_status_label.setText(f"Connected: {len(self.available_tabs)} tabs available")
 
-        # Populate Prospect Lists (Multi-select)
+        # Populate Prospect Lists (Multi-select Dropdown)
         default_messenger_idx = 0
         default_master_idx = 0
 
         for idx, tab in enumerate(self.available_tabs):
             title = tab.get("title", "Untitled")
             url = tab.get("url", "")
-            display_text = f"{title[:65]}\n({url[:50]}...)" if len(url) > 50 else f"{title[:65]}"
+            display_title = title[:60] if title else "Untitled"
+            display_url = f" ({url[:45]}...)" if len(url) > 45 else (f" ({url})" if url else "")
+            full_display = f"{display_title}{display_url}"
 
-            # Add to prospect list as a checkable item
-            item = QListWidgetItem(f"📄 {display_text}")
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            item.setData(Qt.ItemDataRole.UserRole, tab)
-            
             # Auto-check if matches daily prospect patterns
-            if "prospect" in title.lower() or "oct" in title.lower() or "nov" in title.lower() or "sheet" in title.lower():
-                item.setCheckState(Qt.CheckState.Checked)
-            else:
-                item.setCheckState(Qt.CheckState.Unchecked)
-
-            self.prospect_list_widget.addItem(item)
+            is_prospect = bool("prospect" in title.lower() or "oct" in title.lower() or "nov" in title.lower() or "sheet" in title.lower())
+            
+            # Add to Checkable Dropdown
+            self.prospect_combo.add_checkable_item(f"📄 {full_display}", user_data=tab, checked=is_prospect)
 
             # Add to dropdowns
-            self.messenger_combo.addItem(f"💬 {display_text.splitlines()[0]}", tab)
-            self.master_combo.addItem(f"📊 {display_text.splitlines()[0]}", tab)
+            self.messenger_combo.addItem(f"💬 {display_title}", tab)
+            self.master_combo.addItem(f"📊 {display_title}", tab)
 
             # Auto-select messenger
             if "messenger" in url.lower() or "facebook.com/messages" in url.lower() or "messenger" in title.lower():
@@ -638,33 +707,20 @@ class MainWindow(QMainWindow):
         if self.master_combo.count() > default_master_idx:
             self.master_combo.setCurrentIndex(default_master_idx)
 
-    def on_prospect_item_changed(self, item):
-        pass
-
     def select_all_prospects(self):
-        for i in range(self.prospect_list_widget.count()):
-            self.prospect_list_widget.item(i).setCheckState(Qt.CheckState.Checked)
+        self.prospect_combo.set_all_checked(True)
 
     def clear_prospect_selection(self):
-        for i in range(self.prospect_list_widget.count()):
-            self.prospect_list_widget.item(i).setCheckState(Qt.CheckState.Unchecked)
+        self.prospect_combo.set_all_checked(False)
 
     def get_selected_prospect_tabs(self):
-        selected_tabs = []
-        for i in range(self.prospect_list_widget.count()):
-            item = self.prospect_list_widget.item(i)
-            # Check both checkState and isSelected for maximum user friendliness
-            if item.checkState() == Qt.CheckState.Checked or item.isSelected():
-                tab_data = item.data(Qt.ItemDataRole.UserRole)
-                if tab_data and tab_data not in selected_tabs:
-                    selected_tabs.append(tab_data)
-        return selected_tabs
+        return self.prospect_combo.get_checked_data()
 
     def start_tracker_task(self):
         # 1. Validate Selections
         selected_prospect_tabs = self.get_selected_prospect_tabs()
         if not selected_prospect_tabs:
-            QMessageBox.warning(self, "Selection Required", "Please check or select at least one Prospect Google Sheets tab.")
+            QMessageBox.warning(self, "Selection Required", "Please select at least one Prospect Google Sheets tab from the dropdown.")
             return
 
         messenger_tab = self.messenger_combo.currentData()
